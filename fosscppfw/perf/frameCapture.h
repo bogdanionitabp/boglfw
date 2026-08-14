@@ -79,12 +79,16 @@ private:
 	}
 
 	static void endFrame(std::chrono::time_point<std::chrono::high_resolution_clock> now) {
-		if (!getThreadInstance().frameStack_.size()) {
+		auto &ti = getThreadInstance();
+		if (!ti.frameStack_.size()) {
 			beginFrame("{UNKNOWN}", captureStartTime_, true, false);
 		}
-		auto &ti = getThreadInstance();
-		(*ti.frames_)[ti.frameStack_.top()].endTime_ = now;
+		size_t idx = ti.frameStack_.top();
 		ti.frameStack_.pop();
+		// cleanup() on another thread may have cleared frames_; skip stale indices
+		if (idx < ti.frames_->size()) {
+			(*ti.frames_)[idx].endTime_ = now;
+		}
 	}
 
 	static std::atomic<CaptureMode> mode_;
