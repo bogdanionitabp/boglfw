@@ -49,12 +49,14 @@ AMQPManager::AMQPManager(
 	std::string const& name,
 	AMQP::ConnectionConfig connectionConfig,
 	std::vector<AMQP::QueueConfig> mqQueues,
-	std::vector<AMQP::ExchangeConfig> mqExchanges
+	std::vector<AMQP::ExchangeConfig> mqExchanges,
+	std::function<bool()> stopRequested
 )
 	: name_(name)
 	, connectionConfig_(connectionConfig)
 	, queues_(std::move(mqQueues))
 	, exchanges_(std::move(mqExchanges))
+	, stopRequested_(std::move(stopRequested))
 {
 	LOGPREFIX(strbld() << "AMQP::" << name_);
 	// set up the socket connection to the RabbitMQ server
@@ -163,6 +165,7 @@ bool AMQPManager::step() {
 
 void AMQPManager::reconnect() {
 	AMQPLOGLN("Connecting...")
+	++channelGeneration_;
 	if (socketConnected_) {
 		net::closeConnection(sockConn_);
 		std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -199,13 +202,21 @@ void AMQPManager::initSocketConnection() {
 	LOGPREFIX("initSocketConnection");
 	socketConnected_ = false;
 	do {
+		if (stopRequested_ && stopRequested_()) {
+			throw AMQPManagerStopRequested();
+		}
 		AMQPLOGLN("Connecting to RabbitMQ...");
 		net::result res = net::connect(connectionConfig_.host, connectionConfig_.port, sockConn_);
 		if (res != net::result::ok) {
 			ERRORLOG("Unable to connect to RabbitMQ server at " << connectionConfig_.host << ":" << connectionConfig_.port
 				<< "\n" << net::errorString(res));
 			ERRORLOG("Sleeping for 10 seconds, then we'll retry...");
-			std::this_thread::sleep_for(std::chrono::seconds(10));
+			for (unsigned step = 0; step < 100; ++step) {
+				if (stopRequested_ && stopRequested_()) {
+					throw AMQPManagerStopRequested();
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			}
 		} else {
 			AMQPLOGLN("Connected successfully to RabbitMq.");
 			socketConnected_ = true;
@@ -245,8 +256,15 @@ void AMQPManager::setupQueues(std::vector<AMQP::QueueConfig> const& queues) {
 				// extract useful data from the message:
 				std::string replyTo = msg.replyTo();
 				std::string correlationId = msg.correlationID();
+				// The completion callback is bound to the channel generation it was created on,
+				// so a reply produced after a reconnect cannot ack or publish on a new channel.
+				uint64_t const deliveryChannelGeneration = channelGeneration_;
 				// call the handler
-				qConfig.handler(payload, [this, deliveryTag, replyTo, correlationId] (std::string result) {
+				qConfig.handler(payload, [this, deliveryTag, replyTo, correlationId, deliveryChannelGeneration] (std::string result) {
+					if (deliveryChannelGeneration != channelGeneration_) {
+						AMQPLOGLN("Ignoring completion from a stale AMQP channel generation.");
+						return;
+					}
 					PERF_MARKER("AMQP-send-reply");
 					// this is the result callback, which should ALWAYS be invoked from the main thread
 					DEBUGAMQPLOG("Sending back reply on queue '" << replyTo << "'");
