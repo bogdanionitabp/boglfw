@@ -15,6 +15,14 @@
 
 #include <functional>
 #include <chrono>
+#include <cstdint>
+#include <stdexcept>
+
+class AMQPManagerStopRequested : public std::runtime_error {
+public:
+	AMQPManagerStopRequested()
+		: std::runtime_error("AMQP connection stopped") {}
+};
 
 /**
  * This class IS NOT THREAD SAFE !!!
@@ -27,7 +35,8 @@ public:
 		std::string const& name,
 		AMQP::ConnectionConfig connectionConfig,
 		std::vector<AMQP::QueueConfig> mqQueues,
-		std::vector<AMQP::ExchangeConfig> mqExchanges = {}
+		std::vector<AMQP::ExchangeConfig> mqExchanges = {},
+		std::function<bool()> stopRequested = {}
 	);
 	~AMQPManager();
 
@@ -67,6 +76,8 @@ private:
 	AMQP::Channel* amqpChannel_ = nullptr;
 	std::vector<AMQP::QueueConfig> queues_;
 	std::vector<AMQP::ExchangeConfig> exchanges_;
+	std::function<bool()> stopRequested_;
+	uint64_t channelGeneration_ = 0;
 	std::chrono::system_clock::time_point timeLastHeartbeatSent_;
 	std::chrono::system_clock::time_point timeLastDataReceived_;
 
