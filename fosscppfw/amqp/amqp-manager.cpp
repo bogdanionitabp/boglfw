@@ -265,8 +265,9 @@ void AMQPManager::setupQueues(std::vector<AMQP::QueueConfig> const& queues) {
 				uint64_t const deliveryChannelGeneration = channelGeneration_;
 				size_t const replyChunkBytes = qConfig.replyChunkBytes;
 				bool const preserveReplyUtf8Boundaries = qConfig.preserveReplyUtf8Boundaries;
+				auto const replyCompression = AMQP::negotiateReplyCompression(qConfig.replyCompression, msg.headers());
 				// call the handler
-				qConfig.handler(payload, [this, deliveryTag, replyTo, correlationId, deliveryChannelGeneration, replyChunkBytes, preserveReplyUtf8Boundaries] (std::string result) {
+				qConfig.handler(payload, [this, deliveryTag, replyTo, correlationId, deliveryChannelGeneration, replyChunkBytes, preserveReplyUtf8Boundaries, replyCompression] (std::string result) {
 					if (deliveryChannelGeneration != channelGeneration_) {
 						AMQPLOGLN("Ignoring completion from a stale AMQP channel generation.");
 						return;
@@ -274,15 +275,20 @@ void AMQPManager::setupQueues(std::vector<AMQP::QueueConfig> const& queues) {
 					PERF_MARKER("AMQP-send-reply");
 					// this is the result callback, which should ALWAYS be invoked from the main thread
 					DEBUGAMQPLOG("Sending back reply on queue '" << replyTo << "'");
+					auto compressed = AMQP::compressReply(result, replyCompression);
+					bool const isCompressed = compressed.has_value();
+					if (isCompressed) result = std::move(*compressed);
 					size_t bytesSent = 0;
 					while (bytesSent < result.size()) {
 						size_t messageSize = AMQP::getReplyChunkSize(
-							std::string_view(result).substr(bytesSent), replyChunkBytes, preserveReplyUtf8Boundaries
+							std::string_view(result).substr(bytesSent), replyChunkBytes,
+							preserveReplyUtf8Boundaries && !isCompressed
 						);
 						bool isMultipart = result.size() > replyChunkBytes;
 						bool isLastPart = bytesSent + messageSize == result.size();
 						AMQP::Envelope envelope(&result[bytesSent], messageSize);
 						envelope.setCorrelationID(correlationId);
+						if (isCompressed) envelope.setContentEncoding("zstd");
 						if (isMultipart && !isLastPart) {
 							envelope.setTypeName("multipart/incomplete");
 						}

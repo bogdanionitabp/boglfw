@@ -5,11 +5,21 @@
 #include <vector>
 #include <functional>
 #include <cstddef>
+#include <optional>
 
 namespace AMQP {
 
 using MQResultCallback = std::function<void(std::string)>;
 using MQHandler = std::function<void(std::string payload, MQResultCallback resultCallback)>;
+
+enum class ReplyCompression { None, Zstd };
+class Table;
+
+ReplyCompression parseReplyCompression(std::string_view value);
+ReplyCompression negotiateReplyCompression(ReplyCompression configured, Table const& headers);
+
+/** Returns a complete compressed frame only when it is smaller than the original reply. */
+std::optional<std::string> compressReply(std::string_view payload, ReplyCompression compression);
 
 namespace detail {
 	template <class SUBCLASS>
@@ -44,6 +54,7 @@ struct QueueConfig: public detail::BaseConfig<QueueConfig> {
 	MQHandler handler = nullptr;
 	size_t replyChunkBytes = 32768;
 	bool preserveReplyUtf8Boundaries = false;
+	ReplyCompression replyCompression = ReplyCompression::None;
 
 	QueueConfig() = default;
 
@@ -69,6 +80,11 @@ struct QueueConfig: public detail::BaseConfig<QueueConfig> {
 
 	QueueConfig& setPreserveReplyUtf8Boundaries(bool preserve) {
 		preserveReplyUtf8Boundaries = preserve;
+		return *this;
+	}
+
+	QueueConfig& setReplyCompression(ReplyCompression compression) {
+		replyCompression = compression;
 		return *this;
 	}
 };
