@@ -1,8 +1,10 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <functional>
+#include <cstddef>
 
 namespace AMQP {
 
@@ -40,6 +42,8 @@ struct QueueConfig: public detail::BaseConfig<QueueConfig> {
 		std::string routingKey;
 	} exchangeBinding;
 	MQHandler handler = nullptr;
+	size_t replyChunkBytes = 32768;
+	bool preserveReplyUtf8Boundaries = false;
 
 	QueueConfig() = default;
 
@@ -55,6 +59,16 @@ struct QueueConfig: public detail::BaseConfig<QueueConfig> {
 
 	QueueConfig& setHandler(MQHandler handler) {
 		this->handler = handler;
+		return *this;
+	}
+
+	QueueConfig& setReplyChunkBytes(size_t bytes) {
+		replyChunkBytes = bytes;
+		return *this;
+	}
+
+	QueueConfig& setPreserveReplyUtf8Boundaries(bool preserve) {
+		preserveReplyUtf8Boundaries = preserve;
 		return *this;
 	}
 };
@@ -111,5 +125,12 @@ struct ConnectionConfig {
  * The names of the queues will be "exchangeName-queue-1", "exchangeName-queue-2", etc.
  */
 std::vector<QueueConfig> generateXRandomQueues(std::string const& exchangeName, int count, MQHandler handler);
+
+/** Returns a chunk length without copying the payload. maxChunkBytes must be positive. */
+size_t getReplyChunkSize(
+	std::string_view remainingPayload,
+	size_t maxChunkBytes,
+	bool preserveUtf8Boundaries = false
+);
 
 } // namespace AMQP

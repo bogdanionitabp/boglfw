@@ -30,7 +30,6 @@
 #define AMQPLOGLN(X) LOGLN(AMQP_LOG_COLOR << X)
 
 static const size_t MAX_SEND_FRAME_SIZE = 4096; // bytes
-static const size_t MAX_REPLY_PAYLOAD_SIZE = 32768; // bytes
 
 void printConnectionStatus(AMQP::Connection *connection) {
 	DEBUGAMQPLOG("Connection status: +++++++++++++++++++++++++++++\n"
@@ -58,6 +57,11 @@ AMQPManager::AMQPManager(
 	, exchanges_(std::move(mqExchanges))
 	, stopRequested_(std::move(stopRequested))
 {
+	for (auto const& queue : queues_) {
+		if (queue.replyChunkBytes == 0 || (queue.preserveReplyUtf8Boundaries && queue.replyChunkBytes < 4)) {
+			throw std::invalid_argument("Invalid reply chunk size for AMQP queue \"" + queue.name + "\"");
+		}
+	}
 	LOGPREFIX(strbld() << "AMQP::" << name_);
 	// set up the socket connection to the RabbitMQ server
 	reconnect();
@@ -259,8 +263,10 @@ void AMQPManager::setupQueues(std::vector<AMQP::QueueConfig> const& queues) {
 				// The completion callback is bound to the channel generation it was created on,
 				// so a reply produced after a reconnect cannot ack or publish on a new channel.
 				uint64_t const deliveryChannelGeneration = channelGeneration_;
+				size_t const replyChunkBytes = qConfig.replyChunkBytes;
+				bool const preserveReplyUtf8Boundaries = qConfig.preserveReplyUtf8Boundaries;
 				// call the handler
-				qConfig.handler(payload, [this, deliveryTag, replyTo, correlationId, deliveryChannelGeneration] (std::string result) {
+				qConfig.handler(payload, [this, deliveryTag, replyTo, correlationId, deliveryChannelGeneration, replyChunkBytes, preserveReplyUtf8Boundaries] (std::string result) {
 					if (deliveryChannelGeneration != channelGeneration_) {
 						AMQPLOGLN("Ignoring completion from a stale AMQP channel generation.");
 						return;
@@ -270,8 +276,10 @@ void AMQPManager::setupQueues(std::vector<AMQP::QueueConfig> const& queues) {
 					DEBUGAMQPLOG("Sending back reply on queue '" << replyTo << "'");
 					size_t bytesSent = 0;
 					while (bytesSent < result.size()) {
-						size_t messageSize = std::min(result.size() - bytesSent, MAX_REPLY_PAYLOAD_SIZE);
-						bool isMultipart = result.size() > MAX_REPLY_PAYLOAD_SIZE;
+						size_t messageSize = AMQP::getReplyChunkSize(
+							std::string_view(result).substr(bytesSent), replyChunkBytes, preserveReplyUtf8Boundaries
+						);
+						bool isMultipart = result.size() > replyChunkBytes;
 						bool isLastPart = bytesSent + messageSize == result.size();
 						AMQP::Envelope envelope(&result[bytesSent], messageSize);
 						envelope.setCorrelationID(correlationId);
