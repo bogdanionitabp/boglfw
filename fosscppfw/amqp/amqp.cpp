@@ -64,6 +64,29 @@ size_t getReplyChunkSize(std::string_view remainingPayload, size_t maxChunkBytes
 	return boundary > 0 && !isContinuation(boundary) ? boundary : chunkSize;
 }
 
+std::optional<PreparedReply> prepareReply(
+	std::string const& payload, Table const& requestHeaders, ReplyCompression compression,
+	ReplyPreparer const& preparer, std::string const& correlationId, size_t maxFrameBytes
+) {
+	std::optional<PreparedReply> prepared;
+	if (preparer) {
+		prepared = preparer(payload, requestHeaders, compression);
+	} else if (auto compressed = compressReply(payload, negotiateReplyCompression(compression, requestHeaders))) {
+		prepared = PreparedReply {std::move(*compressed), {}, "zstd"};
+	}
+	if (!prepared || prepared->headers.empty()) return prepared;
+	Table headers;
+	for (auto const& entry : prepared->headers) headers[entry.first] = entry.second;
+	MetaData metadata;
+	metadata.setHeaders(headers);
+	metadata.setContentEncoding(prepared->contentEncoding);
+	metadata.setCorrelationID(correlationId);
+	metadata.setTypeName("multipart/incomplete");
+	// AMQP content-header framing: frame prefix/end (8), class/weight (4), body size (8).
+	if (maxFrameBytes != 0 && 20u + metadata.size() > maxFrameBytes) return std::nullopt;
+	return prepared;
+}
+
 std::vector<QueueConfig> generateXRandomQueues(std::string const& exchangeName, int count, MQHandler handler) {
 	std::vector<QueueConfig> queues;
 	if (count <= 0) {

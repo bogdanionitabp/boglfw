@@ -6,6 +6,7 @@
 #include <functional>
 #include <cstddef>
 #include <optional>
+#include <utility>
 
 namespace AMQP {
 
@@ -20,6 +21,22 @@ ReplyCompression negotiateReplyCompression(ReplyCompression configured, Table co
 
 /** Returns a complete compressed frame only when it is smaller than the original reply. */
 std::optional<std::string> compressReply(std::string_view payload, ReplyCompression compression);
+
+struct PreparedReply {
+	std::string body;
+	std::vector<std::pair<std::string, std::string>> headers;
+	std::string contentEncoding;
+};
+
+/** A null result preserves the original plain reply, before any fragments are sent. */
+using ReplyPreparer = std::function<std::optional<PreparedReply>(
+	std::string const&, Table const&, ReplyCompression
+)>;
+
+std::optional<PreparedReply> prepareReply(
+	std::string const& payload, Table const& requestHeaders, ReplyCompression compression,
+	ReplyPreparer const& preparer, std::string const& correlationId, size_t maxFrameBytes
+);
 
 namespace detail {
 	template <class SUBCLASS>
@@ -55,6 +72,7 @@ struct QueueConfig: public detail::BaseConfig<QueueConfig> {
 	size_t replyChunkBytes = 32768;
 	bool preserveReplyUtf8Boundaries = false;
 	ReplyCompression replyCompression = ReplyCompression::None;
+	ReplyPreparer replyPreparer;
 
 	QueueConfig() = default;
 
@@ -85,6 +103,11 @@ struct QueueConfig: public detail::BaseConfig<QueueConfig> {
 
 	QueueConfig& setReplyCompression(ReplyCompression compression) {
 		replyCompression = compression;
+		return *this;
+	}
+
+	QueueConfig& setReplyPreparer(ReplyPreparer preparer) {
+		replyPreparer = std::move(preparer);
 		return *this;
 	}
 };
